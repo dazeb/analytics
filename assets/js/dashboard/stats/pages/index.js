@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 import * as storage from '../../util/storage'
 import * as url from '../../util/url'
@@ -30,7 +30,7 @@ function EntryPages({ query, site, afterFetchData }) {
       getFilterFor={getFilterFor}
       keyLabel="Entry page"
       metrics={maybeWithCR([{ ...VISITORS_METRIC, label: 'Unique Entrances' }], query)}
-      detailsLink={url.sitePath(site, '/entry-pages')}
+      detailsLink={url.sitePath('entry-pages')}
       query={query}
       externalLinkDest={externalLinkDest}
       color="bg-orange-50"
@@ -61,7 +61,7 @@ function ExitPages({ query, site, afterFetchData }) {
       getFilterFor={getFilterFor}
       keyLabel="Exit page"
       metrics={maybeWithCR([{ ...VISITORS_METRIC, label: "Unique Exits" }], query)}
-      detailsLink={url.sitePath(site, '/exit-pages')}
+      detailsLink={url.sitePath('exit-pages')}
       query={query}
       externalLinkDest={externalLinkDest}
       color="bg-orange-50"
@@ -92,7 +92,7 @@ function TopPages({ query, site, afterFetchData }) {
       getFilterFor={getFilterFor}
       keyLabel="Page"
       metrics={maybeWithCR([VISITORS_METRIC], query)}
-      detailsLink={url.sitePath(site, '/pages')}
+      detailsLink={url.sitePath('pages')}
       query={query}
       externalLinkDest={externalLinkDest}
       color="bg-orange-50"
@@ -107,11 +107,12 @@ const labelFor = {
 }
 
 export default function Pages(props) {
-  const {site, query} = props
+  const { site, query } = props
   const tabKey = `pageTab__${site.domain}`
   const storedTab = storage.getItem(tabKey)
   const [mode, setMode] = useState(storedTab || 'pages')
-  const [importedQueryUnsupported, setImportedQueryUnsupported] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [skipImportedReason, setSkipImportedReason] = useState(null)
 
   function switchTab(mode) {
     storage.setItem(tabKey, mode)
@@ -119,10 +120,11 @@ export default function Pages(props) {
   }
 
   function afterFetchData(apiResponse) {
-    const unsupportedQuery = apiResponse.skip_imported_reason === 'unsupported_query'
-    const isRealtime = query.period === 'realtime'
-    setImportedQueryUnsupported(unsupportedQuery && !isRealtime)
+    setLoading(false)
+    setSkipImportedReason(apiResponse.skip_imported_reason)
   }
+
+  useEffect(() => setLoading(true), [query, mode])
 
   function renderContent() {
     switch (mode) {
@@ -168,7 +170,7 @@ export default function Pages(props) {
           <h3 className="font-bold dark:text-gray-100">
             {labelFor[mode] || 'Page Visits'}
           </h3>
-          <ImportedQueryUnsupportedWarning condition={importedQueryUnsupported}/>
+          <ImportedQueryUnsupportedWarning loading={loading} query={query} skipImportedReason={skipImportedReason} />
         </div>
         <div className="flex font-medium text-xs text-gray-500 dark:text-gray-400 space-x-2">
           {renderPill('Top Pages', 'pages')}

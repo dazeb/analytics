@@ -1,7 +1,7 @@
 defmodule Plausible.Stats.Aggregate do
   use Plausible.ClickhouseRepo
   use Plausible
-  import Plausible.Stats.{Base, Imported}
+  import Plausible.Stats.Base
   import Ecto.Query
   alias Plausible.Stats.{Query, Util}
 
@@ -15,23 +15,21 @@ defmodule Plausible.Stats.Aggregate do
 
     Query.trace(query, metrics)
 
-    {event_metrics, session_metrics, other_metrics} =
-      metrics
-      |> Util.maybe_add_visitors_metric()
-      |> Plausible.Stats.TableDecider.partition_metrics(query)
+    query_with_metrics = %Query{query | metrics: metrics}
 
-    event_task = fn -> aggregate_events(site, query, event_metrics) end
-
-    session_task = fn -> aggregate_sessions(site, query, session_metrics) end
+    q = Plausible.Stats.SQL.QueryBuilder.build(query_with_metrics, site)
 
     time_on_page_task =
-      if :time_on_page in other_metrics do
+      if :time_on_page in query_with_metrics.metrics do
         fn -> aggregate_time_on_page(site, query) end
       else
         fn -> %{} end
       end
 
-    Plausible.ClickhouseRepo.parallel_tasks([session_task, event_task, time_on_page_task])
+    Plausible.ClickhouseRepo.parallel_tasks([
+      run_query_task(q),
+      time_on_page_task
+    ])
     |> Enum.reduce(%{}, fn aggregate, task_result -> Map.merge(aggregate, task_result) end)
     |> Util.keep_requested_metrics(metrics)
     |> cast_revenue_metrics_to_money(currency)
@@ -40,110 +38,10 @@ defmodule Plausible.Stats.Aggregate do
     |> Enum.into(%{})
   end
 
-  defp aggregate_events(_, _, []), do: %{}
-
-  defp aggregate_events(site, query, metrics) do
-    from(e in base_event_query(site, query), select: ^select_event_metrics(metrics))
-    |> merge_imported(site, query, metrics)
-    |> maybe_add_conversion_rate(site, query, metrics)
-    |> ClickhouseRepo.one()
-  end
-
-  defp aggregate_sessions(_, _, []), do: %{}
-
-  defp aggregate_sessions(site, query, metrics) do
-    from(e in query_sessions(site, query), select: ^select_session_metrics(metrics, query))
-    |> filter_converted_sessions(site, query)
-    |> merge_imported(site, query, metrics)
-    |> ClickhouseRepo.one()
-    |> Util.keep_requested_metrics(metrics)
-  end
+  defp run_query_task(nil), do: fn -> %{} end
+  defp run_query_task(q), do: fn -> ClickhouseRepo.one(q) end
 
   defp aggregate_time_on_page(site, query) do
-    if FunWithFlags.enabled?(:window_time_on_page) do
-      window_aggregate_time_on_page(site, query)
-    else
-      neighbor_aggregate_time_on_page(site, query)
-    end
-  end
-
-  defp neighbor_aggregate_time_on_page(site, query) do
-    q =
-      from(
-        e in base_event_query(site, Query.remove_filters(query, ["event:page"])),
-        select: {
-          fragment("? as p", e.pathname),
-          fragment("? as t", e.timestamp),
-          fragment("? as s", e.session_id)
-        },
-        order_by: [e.session_id, e.timestamp]
-      )
-
-    {base_query_raw, base_query_raw_params} = ClickhouseRepo.to_sql(:all, q)
-    where_param_idx = length(base_query_raw_params)
-
-    {where_clause, where_arg} =
-      case Query.get_filter(query, "event:page") do
-        [:is, _, page] ->
-          {"p = {$#{where_param_idx}:String}", page}
-
-        [:is_not, _, page] ->
-          {"p != {$#{where_param_idx}:String}", page}
-
-        [:member, _, page] ->
-          {"p IN {$#{where_param_idx}:Array(String)}", page}
-
-        [:not_member, _, page] ->
-          {"p NOT IN {$#{where_param_idx}:Array(String)}", page}
-
-        [:matches, _, expr] ->
-          regex = page_regex(expr)
-          {"match(p, {$#{where_param_idx}:String})", regex}
-
-        [:matches_member, _, exprs] ->
-          page_regexes = Enum.map(exprs, &page_regex/1)
-          {"multiMatchAny(p, {$#{where_param_idx}:Array(String)})", page_regexes}
-
-        [:not_matches_member, _, exprs] ->
-          page_regexes = Enum.map(exprs, &page_regex/1)
-          {"not(multiMatchAny(p, {$#{where_param_idx}:Array(String)}))", page_regexes}
-
-        [:does_not_match, _, expr] ->
-          regex = page_regex(expr)
-          {"not(match(p, {$#{where_param_idx}:String}))", regex}
-      end
-
-    params = base_query_raw_params ++ [where_arg]
-
-    time_query = "
-      SELECT
-        avg(ifNotFinite(avgTime, null))
-      FROM
-        (SELECT
-          p,
-          sum(td)/count(case when p2 != p then 1 end) as avgTime
-        FROM
-          (SELECT
-            p,
-            p2,
-            sum(t2-t) as td
-          FROM
-            (SELECT
-            *,
-              neighbor(t, 1) as t2,
-              neighbor(p, 1) as p2,
-              neighbor(s, 1) as s2
-            FROM (#{base_query_raw}))
-          WHERE s=s2 AND #{where_clause}
-          GROUP BY p,p2,s)
-        GROUP BY p)"
-
-    {:ok, res} = ClickhouseRepo.query(time_query, params)
-    [[time_on_page]] = res.rows
-    %{time_on_page: time_on_page}
-  end
-
-  defp window_aggregate_time_on_page(site, query) do
     windowed_pages_q =
       from e in base_event_query(site, Query.remove_filters(query, ["event:page"])),
         select: %{

@@ -4,7 +4,7 @@ defmodule Plausible.Stats.Query do
   defstruct date_range: nil,
             interval: nil,
             period: nil,
-            property: nil,
+            dimensions: [],
             filters: [],
             sample_threshold: 20_000_000,
             imported_data_requested: false,
@@ -13,7 +13,17 @@ defmodule Plausible.Stats.Query do
             now: nil,
             experimental_session_count?: false,
             experimental_reduced_joins?: false,
-            latest_import_end_date: nil
+            latest_import_end_date: nil,
+            metrics: [],
+            order_by: nil,
+            timezone: nil,
+            v2: false,
+            legacy_breakdown: false,
+            preloaded_goals: [],
+            include: %{
+              imports: false,
+              time_labels: false
+            }
 
   require OpenTelemetry.Tracer, as: Tracer
   alias Plausible.Stats.{Filters, Interval, Imported}
@@ -30,7 +40,7 @@ defmodule Plausible.Stats.Query do
       |> put_experimental_session_count(site, params)
       |> put_experimental_reduced_joins(site, params)
       |> put_period(site, params)
-      |> put_breakdown_property(params)
+      |> put_dimensions(params)
       |> put_interval(params)
       |> put_parsed_filters(params)
       |> put_imported_opts(site, params)
@@ -40,6 +50,19 @@ defmodule Plausible.Stats.Query do
     end
 
     query
+  end
+
+  def build(site, params) do
+    with {:ok, query_data} <- Filters.QueryParser.parse(site, params) do
+      query =
+        struct!(__MODULE__, Map.to_list(query_data))
+        |> put_imported_opts(site, %{})
+        |> put_experimental_session_count(site, params)
+        |> put_experimental_reduced_joins(site, params)
+        |> struct!(v2: true)
+
+      {:ok, query}
+    end
   end
 
   defp put_experimental_session_count(query, site, params) do
@@ -185,8 +208,12 @@ defmodule Plausible.Stats.Query do
     put_period(query, site, Map.merge(params, %{"period" => "30d"}))
   end
 
-  defp put_breakdown_property(query, params) do
-    struct!(query, property: params["property"])
+  defp put_dimensions(query, params) do
+    if not is_nil(params["property"]) do
+      struct!(query, dimensions: [params["property"]])
+    else
+      struct!(query, dimensions: Map.get(params, "dimensions", []))
+    end
   end
 
   defp put_interval(%{:period => "all"} = query, params) do
@@ -203,13 +230,29 @@ defmodule Plausible.Stats.Query do
     struct!(query, filters: Filters.parse(params["filters"]))
   end
 
-  @spec set_property(t(), String.t() | nil, Keyword.t()) :: t()
-  def set_property(query, property, opts \\ []) do
-    query = struct!(query, property: property)
+  def set(query, keywords) do
+    query
+    |> struct!(keywords)
+    |> refresh_imported_opts()
+  end
 
-    if Keyword.get(opts, :skip_refresh_imported_opts),
-      do: query,
-      else: refresh_imported_opts(query)
+  @spec set_dimensions(t(), list(String.t())) :: t()
+  def set_dimensions(query, dimensions) do
+    query
+    |> struct!(dimensions: dimensions)
+    |> refresh_imported_opts()
+  end
+
+  def set_metrics(query, metrics) do
+    query
+    |> struct!(metrics: metrics)
+    |> refresh_imported_opts()
+  end
+
+  def set_order_by(query, order_by) do
+    query
+    |> struct!(order_by: order_by)
+    |> refresh_imported_opts()
   end
 
   def put_filter(query, filter) do
@@ -218,17 +261,15 @@ defmodule Plausible.Stats.Query do
     |> refresh_imported_opts()
   end
 
-  def remove_filters(query, prefixes, opts \\ []) do
+  def remove_filters(query, prefixes) do
     new_filters =
       Enum.reject(query.filters, fn [_, filter_key | _rest] ->
         Enum.any?(prefixes, &String.starts_with?(filter_key, &1))
       end)
 
-    query = struct!(query, filters: new_filters)
-
-    if Keyword.get(opts, :skip_refresh_imported_opts),
-      do: query,
-      else: refresh_imported_opts(query)
+    query
+    |> struct!(filters: new_filters)
+    |> refresh_imported_opts()
   end
 
   def exclude_imported(query) do
@@ -301,14 +342,14 @@ defmodule Plausible.Stats.Query do
   end
 
   @spec ensure_include_imported(t(), boolean()) ::
-          :ok | {:error, :not_requested | :no_imported_data | :out_of_range | :unsupported_query}
+          :ok | {:error, :no_imported_data | :out_of_range | :unsupported_query | :not_requested}
   def ensure_include_imported(query, requested?) do
     cond do
-      not requested? -> {:error, :not_requested}
       is_nil(query.latest_import_end_date) -> {:error, :no_imported_data}
       Date.after?(query.date_range.first, query.latest_import_end_date) -> {:error, :out_of_range}
       not Imported.schema_supports_query?(query) -> {:error, :unsupported_query}
       query.period == "realtime" -> {:error, :unsupported_query}
+      not requested? -> {:error, :not_requested}
       true -> :ok
     end
   end
@@ -326,7 +367,7 @@ defmodule Plausible.Stats.Query do
     Tracer.set_attributes([
       {"plausible.query.interval", query.interval},
       {"plausible.query.period", query.period},
-      {"plausible.query.breakdown_property", query.property},
+      {"plausible.query.dimensions", query.dimensions |> Enum.join(";")},
       {"plausible.query.include_imported", query.include_imported},
       {"plausible.query.filter_keys", filter_keys},
       {"plausible.query.metrics", metrics}

@@ -4,18 +4,38 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
+- Icons for browsers plausible/analytics#4239
+- Automatic custom property selection in the dashboard Properties report
+- Add `does_not_contain` filter support to dashboard
+
+### Removed
+- Deprecate `ECTO_IPV6` and `ECTO_CH_IPV6` env vars in CE plausible/analytics#4245
+
+### Changed
+
+- Increase hourly request limit for API keys in CE from 600 to 1000000 (practically removing the limit) plausible/analytics#4200
+- Make TCP connections try IPv6 first with IPv4 fallback in CE plausible/analytics#4245
+- `is` and `is not` filters in dashboard no longer support wildcards. Use contains/does not contain filter instead.
+- `bounce_rate` metric now returns 0 instead of null for event:page breakdown when page has never been entry page.
+
+### Fixed
+
+- Fix access to Stats API feature in CE plausible/analytics#4244
+
+## v2.1.1 - 2024-06-06
+
+### Added
 
 - Snippet integration verification
 - Limited filtering support for imported data in the dashboard and via Stats API
-
-### Removed
-
-### Changed
+- Automatic sites.imported_data -> site_imports data migration in CE plausible/analytics#4155
 
 ### Fixed
 
 - Fix CSV import by adding a newline to the INSERT statement plausible/analytics#4172
 - Fix url parameters escaping of = sign plausible/analytics#4185
+- Fix redirect after registration in CE plausible/analytics#4165
+- Fix VersionedSessions migration in ClickHouse v24 plausible/analytics#4162
 
 ## v2.1.0 - 2024-05-23
 

@@ -51,6 +51,13 @@ defmodule Plausible.Verification.Diagnostics do
   end
 
   def interpret(
+        %__MODULE__{plausible_installed?: false, gtm_likely?: true, disallowed_via_csp?: true},
+        _url
+      ) do
+    error(@errors.csp)
+  end
+
+  def interpret(
         %__MODULE__{plausible_installed?: false, gtm_likely?: true, cookie_banner_likely?: true},
         _url
       ) do
@@ -89,6 +96,21 @@ defmodule Plausible.Verification.Diagnostics do
 
   def interpret(
         %__MODULE__{
+          plausible_installed?: true,
+          snippets_found_in_head: 0,
+          snippets_found_in_body: 0,
+          body_fetched?: true,
+          gtm_likely?: false,
+          callback_status: callback_status
+        },
+        _url
+      )
+      when is_integer(callback_status) and callback_status > 202 do
+    error(@errors.no_snippet)
+  end
+
+  def interpret(
+        %__MODULE__{
           plausible_installed?: false,
           snippets_found_in_head: 0,
           snippets_found_in_body: 0,
@@ -109,6 +131,16 @@ defmodule Plausible.Verification.Diagnostics do
         _url
       ) do
     error(@errors.unreachable)
+  end
+
+  def interpret(
+        %__MODULE__{
+          plausible_installed?: false,
+          service_error: :timeout
+        },
+        _url
+      ) do
+    error(@errors.generic)
   end
 
   def interpret(
@@ -135,21 +167,17 @@ defmodule Plausible.Verification.Diagnostics do
 
   def interpret(
         %__MODULE__{
-          snippets_found_in_body: 0,
-          snippets_found_in_head: 1,
           plausible_installed?: true,
           wordpress_likely?: false,
           callback_status: -1
         },
         _url
       ) do
-    error(@errors.old_script)
+    error(@errors.generic)
   end
 
   def interpret(
         %__MODULE__{
-          snippets_found_in_body: 0,
-          snippets_found_in_head: 1,
           plausible_installed?: true,
           wordpress_likely?: true,
           wordpress_plugin?: false,
@@ -162,8 +190,6 @@ defmodule Plausible.Verification.Diagnostics do
 
   def interpret(
         %__MODULE__{
-          snippets_found_in_body: 0,
-          snippets_found_in_head: 1,
           plausible_installed?: true,
           wordpress_likely?: true,
           wordpress_plugin?: true,
@@ -336,10 +362,12 @@ defmodule Plausible.Verification.Diagnostics do
     %Result{ok?: true}
   end
 
-  def interpret(rating, url) do
-    Sentry.capture_message("Unhandled case for site verification: #{url}",
+  def interpret(diagnostics, url) do
+    Sentry.capture_message("Unhandled case for site verification",
       extra: %{
-        message: inspect(rating)
+        message: inspect(diagnostics),
+        url: url,
+        hash: :erlang.phash2(diagnostics)
       }
     )
 

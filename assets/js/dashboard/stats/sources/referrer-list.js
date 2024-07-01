@@ -1,21 +1,23 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import * as api from '../../api'
 import * as url from '../../util/url'
 import { VISITORS_METRIC, maybeWithCR } from '../reports/metrics'
 import ListReport from '../reports/list'
 import ImportedQueryUnsupportedWarning from '../../stats/imported-query-unsupported-warning'
 
-export default function Referrers({source, site, query}) {
-  const [importedQueryUnsupported, setImportedQueryUnsupported] = useState(false)
+export default function Referrers({ source, site, query }) {
+  const [skipImportedReason, setSkipImportedReason] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => setLoading(true), [query])
 
   function fetchReferrers() {
-    return api.get(url.apiPath(site, `/referrers/${encodeURIComponent(source)}`), query, {limit: 9})
+    return api.get(url.apiPath(site, `/referrers/${encodeURIComponent(source)}`), query, { limit: 9 })
   }
 
   function afterFetchReferrers(apiResponse) {
-    const unsupportedQuery = apiResponse.skip_imported_reason === 'unsupported_query'
-    const isRealtime = query.period === 'realtime'
-    setImportedQueryUnsupported(unsupportedQuery && !isRealtime)
+    setLoading(false)
+    setSkipImportedReason(apiResponse.skip_imported_reason)
   }
 
   function externalLinkDest(referrer) {
@@ -46,7 +48,7 @@ export default function Referrers({source, site, query}) {
     <div className="flex flex-col flex-grow">
       <div className="flex gap-x-1">
         <h3 className="font-bold dark:text-gray-100">Top Referrers</h3>
-        <ImportedQueryUnsupportedWarning condition={importedQueryUnsupported}/>
+        <ImportedQueryUnsupportedWarning loading={loading} query={query} skipImportedReason={skipImportedReason} />
       </div>
       <ListReport
         fetchData={fetchReferrers}
@@ -54,7 +56,7 @@ export default function Referrers({source, site, query}) {
         getFilterFor={getFilterFor}
         keyLabel="Referrer"
         metrics={maybeWithCR([VISITORS_METRIC], query)}
-        detailsLink={url.sitePath(site, `/referrers/${encodeURIComponent(source)}`)}
+        detailsLink={url.sitePath(`referrers/${encodeURIComponent(source)}`)}
         query={query}
         externalLinkDest={externalLinkDest}
         renderIcon={renderIcon}
